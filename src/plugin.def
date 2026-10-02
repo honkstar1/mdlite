@@ -1,0 +1,8 @@
+LIBRARY mdlite
+EXPORTS
+    ListLoad
+    ListLoadW
+    ListLoadNext
+    ListLoadNextW
+    ListCloseWindow
+    ListGetDetectString
