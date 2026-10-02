@@ -1,3 +1,4 @@
+// Derived from litehtml (Copyright (c) 2013, Yuri Kobets (tordex), BSD 3-clause) - see NOTICE.
 // GDI+ drawing half of the container. Adapted from litehtml's containers/windows/gdiplus, rewritten for the
 // float pixel_t that litehtml's core now uses (the shipped container no longer compiles against it).
 #ifndef NOMINMAX

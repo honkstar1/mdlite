@@ -1,3 +1,4 @@
+// Derived from litehtml (Copyright (c) 2013, Yuri Kobets (tordex), BSD 3-clause) - see NOTICE.
 #pragma once
 #include "win32_container.h"
 
