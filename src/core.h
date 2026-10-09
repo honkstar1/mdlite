@@ -12,8 +12,8 @@ namespace mdlite
     // CommonMark + GitHub extensions (tables, strikethrough, task lists, autolinks) -> HTML fragment.
     std::string md_to_html(const std::string& markdown);
 
-    // Stylesheet applied on top of litehtml's master CSS.
-    std::string stylesheet(bool dark);
+    // Stylesheet applied on top of litehtml's master CSS. zoom scales the base font size; everything else is in em.
+    std::string stylesheet(bool dark, float zoom = 1.0f);
 
     bool system_uses_dark_theme();
 
@@ -60,5 +60,5 @@ namespace mdlite
     };
 
     litehtml::document::ptr build_document(container& c, const std::string& markdown, int width, bool dark,
-                                           timings* t = nullptr);
+                                           float zoom = 1.0f, timings* t = nullptr);
 } // namespace mdlite

@@ -60,7 +60,7 @@ namespace mdlite
         return value == 0;
     }
 
-    std::string stylesheet(bool dark)
+    std::string stylesheet(bool dark, float zoom)
     {
         // Font sizes in pt so litehtml's pt_to_px applies the screen DPI; everything else is in em.
         const char* fg      = dark ? "#d4d4d4" : "#1f2328";
@@ -70,10 +70,13 @@ namespace mdlite
         const char* link    = dark ? "#4fa6ff" : "#0969da";
         const char* muted   = dark ? "#9da5ae" : "#59636e";
 
+        char font_size[32];
+        snprintf(font_size, sizeof(font_size), "%.2fpt", 11.0f * zoom);
+
         std::string css;
         css += std::string("html, body { background-color: ") + bg + "; }\n";
         css += std::string("body { margin: 0; padding: 1.4em 2em; color: ") + fg +
-               "; font-family: 'Segoe UI', sans-serif; font-size: 11pt; line-height: 1.55; }\n";
+               "; font-family: 'Segoe UI', sans-serif; font-size: " + font_size + "; line-height: 1.55; }\n";
         css += "h1, h2, h3, h4, h5, h6 { font-weight: bold; line-height: 1.25; margin: 1.4em 0 0.6em 0; }\n";
         css += "h1 { font-size: 2em; } h2 { font-size: 1.5em; } h3 { font-size: 1.25em; }\n";
         css += "h4 { font-size: 1em; } h5 { font-size: 0.875em; } h6 { font-size: 0.85em; }\n";
@@ -166,7 +169,7 @@ namespace mdlite
     }
 
     litehtml::document::ptr build_document(container& c, const std::string& markdown, int width, bool dark,
-                                           timings* t)
+                                           float zoom, timings* t)
     {
         auto t0   = clock_t_::now();
         auto body = md_to_html(markdown);
@@ -174,7 +177,7 @@ namespace mdlite
             t->md_ms = ms_since(t0);
 
         t0         = clock_t_::now();
-        auto doc   = litehtml::document::createFromString(body, &c, litehtml::master_css, stylesheet(dark));
+        auto doc   = litehtml::document::createFromString(body, &c, litehtml::master_css, stylesheet(dark, zoom));
         if(t)
             t->parse_ms = ms_since(t0);
 

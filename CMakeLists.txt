@@ -16,9 +16,10 @@ add_subdirectory(third_party/litehtml EXCLUDE_FROM_ALL)
 
 set(LH ${CMAKE_SOURCE_DIR}/third_party/litehtml)
 
-# --- core: markdown -> html -> litehtml document, GDI+ container ------------
+# --- core: markdown -> html -> litehtml document, GDI+ container, view window
 add_library(mdlite_core STATIC
     src/core.cpp
+    src/view.cpp
     src/container/win32_container.cpp
     src/container/gdiplus_container.cpp)
 target_include_directories(mdlite_core PUBLIC
@@ -27,12 +28,17 @@ target_include_directories(mdlite_core PUBLIC
     ${LH}/include
     ${CMAKE_SOURCE_DIR}/third_party/md4c/src)
 target_compile_definitions(mdlite_core PUBLIC UNICODE _UNICODE NOMINMAX)
-target_link_libraries(mdlite_core PUBLIC litehtml md4c-html md4c gdiplus)
+target_link_libraries(mdlite_core PUBLIC litehtml md4c-html md4c gdiplus user32 gdi32 shell32 advapi32)
 
 # --- Total Commander lister plugin (.wlx64) --------------------------------
 add_library(mdlite_wlx SHARED src/plugin.cpp src/plugin.def)
-target_link_libraries(mdlite_wlx PRIVATE mdlite_core user32 gdi32 shell32 advapi32)
-set_target_properties(mdlite_wlx PROPERTIES OUTPUT_NAME mdlite SUFFIX ".wlx64")
+target_link_libraries(mdlite_wlx PRIVATE mdlite_core)
+set_target_properties(mdlite_wlx PROPERTIES OUTPUT_NAME mdlite SUFFIX ".wlx64" PDB_NAME mdlite_wlx)
+
+# --- standalone viewer: mdlite.exe <file.md> -------------------------------
+add_executable(mdlite_exe WIN32 src/app.cpp src/app.manifest)
+target_link_libraries(mdlite_exe PRIVATE mdlite_core comdlg32)
+set_target_properties(mdlite_exe PROPERTIES OUTPUT_NAME mdlite)
 
 # --- headless benchmark ----------------------------------------------------
 add_executable(mdlite_bench tools/bench.cpp)

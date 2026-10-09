@@ -1,6 +1,6 @@
 # mdlite
 
-Markdown lister plugin for Total Commander, without a browser engine.
+Markdown lister plugin for Total Commander, without a browser engine. Also builds a standalone viewer, `mdlite.exe`.
 
 `.md` -> [md4c](https://github.com/mity/md4c) (HTML) -> [litehtml](https://github.com/litehtml/litehtml) (layout) -> GDI+ (drawing).
 Opening a file costs a parse and a layout (about 40 ms for a 50 KB file) instead of starting WebView2.
@@ -18,7 +18,7 @@ Open PowerShell in the repo folder:
 
 ```powershell
 .\setup.ps1      # downloads md4c and litehtml into third_party\ (one time)
-.\build.ps1      # builds build\mdlite.wlx64
+.\build.ps1      # builds build\mdlite.wlx64 and build\mdlite.exe
 ```
 
 If PowerShell refuses to run the scripts, use
@@ -34,11 +34,32 @@ If PowerShell refuses to run the scripts, use
 
 Use it: select a `.md` file and press **F3** (or **Ctrl+Q** for the quick-view panel).
 
-Keys: arrows, PgUp/PgDn, Home/End and the mouse wheel scroll. `n`/`p`/Esc go to the Lister as usual.
-
 Uninstall: remove it from the same plugin list and delete the file.
 
-## Try it without Total Commander
+## Keys
+
+| Key | Action |
+| --- | --- |
+| Arrows, PgUp/PgDn, Space, Home/End, wheel | Scroll |
+| Ctrl+wheel, Ctrl+`+` / Ctrl+`-` | Zoom in / out (50%-400%, kept for the session) |
+| Ctrl+0 | Reset zoom |
+| Ctrl+F | Find (case-insensitive, highlights as you type) |
+| Enter / F3, Shift+Enter / Shift+F3 | Next / previous match |
+| Esc | Close the find bar; otherwise close the viewer |
+
+In Total Commander, Lister's own **Find** (F7) and **Find next** also go to the find bar, and `n`/`p` still move
+between files.
+
+## Standalone viewer
+
+```powershell
+build\mdlite.exe some.md                # or run it without an argument to pick a file
+```
+
+`mdlite.exe` is the same view in its own window and needs only itself (static runtime). Drop a file on the window to
+open it. To make it the default app for `.md`, use "Open with" -> "Choose another app" in Explorer.
+
+## Testing without Total Commander
 
 ```powershell
 pwsh tools\smoke.ps1 -File some.md      # hosts the DLL in a window, prints load time, saves build\smoke.png
@@ -48,7 +69,8 @@ build\mdlite_bench.exe some.md 5        # headless timing: md4c / parse / layout
 ## Limits
 
 - x64 only; follows the Windows light/dark app theme.
-- No syntax highlighting (code blocks are plain monospace), no find-in-page, no copy, no print.
+- No syntax highlighting (code blocks are plain monospace), no copy, no print.
+- Zoom scales text and spacing; images keep their size.
 - `#anchor` links and relative links to other files do nothing (md4c emits no heading ids). `http(s)` and `mailto` open externally.
 - Local images work; remote images are skipped on purpose so opening never waits for the network.
 - `src/container/` is litehtml's Windows container adapted to its float `pixel_t`; the shipped version does not compile

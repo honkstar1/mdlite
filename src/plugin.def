@@ -5,4 +5,5 @@ EXPORTS
     ListLoadNext
     ListLoadNextW
     ListCloseWindow
+    ListSearchDialog
     ListGetDetectString

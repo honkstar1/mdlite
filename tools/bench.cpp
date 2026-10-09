@@ -35,7 +35,7 @@ int main(int argc, char** argv)
         mdlite::timings t;
         c.viewport_w = 900;
         c.viewport_h = 700;
-        auto doc     = mdlite::build_document(c, md, 900, false, &t);
+        auto doc     = mdlite::build_document(c, md, 900, false, 1.0f, &t);
         if(!doc)
         {
             puts("document build failed");
