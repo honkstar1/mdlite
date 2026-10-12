@@ -11,6 +11,11 @@ namespace mdlite
     // Replaces the shown file. Zoom and an open find bar carry over.
     bool view_load(HWND view, const wchar_t* file);
 
+    // Copies the selected text to the clipboard. Returns false if nothing is selected.
+    bool view_copy(HWND view);
+
+    void view_select_all(HWND view);
+
     // Opens the find bar. With find_next and a search term already entered, jumps to the next match instead.
     void view_find(HWND view, bool find_next);
 } // namespace mdlite

@@ -61,6 +61,19 @@ extern "C"
         return 0; // LISTPLUGIN_OK
     }
 
+    // Lister's Edit > Copy and Select all.
+    int __stdcall ListSendCommand(HWND plugin, int command, int /*parameter*/)
+    {
+        constexpr int lc_copy = 1, lc_selectall = 3;
+        if(command == lc_copy)
+            mdlite::view_copy(plugin);
+        else if(command == lc_selectall)
+            mdlite::view_select_all(plugin);
+        else
+            return 1; // LISTPLUGIN_ERROR
+        return 0;
+    }
+
     void __stdcall ListGetDetectString(char* out, int maxlen)
     {
         strncpy_s(out, maxlen, "EXT=\"MD\" | EXT=\"MARKDOWN\" | EXT=\"MKD\" | EXT=\"MKDN\"", _TRUNCATE);
