@@ -757,7 +757,7 @@ namespace mdlite
             v->path = path;
             if(!read_file(path, v->markdown))
                 return false;
-            v->dark    = system_uses_dark_theme();
+            v->dark    = use_dark_theme();
             v->scroll  = 0;
             v->current = -1;
             stop_drag(v->hwnd, v);

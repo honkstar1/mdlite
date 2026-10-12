@@ -1,6 +1,7 @@
 // Total Commander lister plugin (WLX): markdown -> md4c -> litehtml -> GDI+.
 // No browser engine, so opening a file costs a parse + layout instead of a Chromium start-up.
 #include "view.h"
+#include "core.h"
 #include <string>
 
 namespace
@@ -24,6 +25,23 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 
 extern "C"
 {
+    struct ListDefaultParamStruct
+    {
+        int   size;
+        DWORD plugin_interface_version_low, plugin_interface_version_high;
+        char  default_ini_name[MAX_PATH]; // wincmd.ini
+    };
+
+    // Called once by Total Commander before the first ListLoad. default_ini_name is a plugin-specific name in
+    // Total Commander's ini directory, not wincmd.ini itself, so look at that and at the wincmd.ini beside it.
+    void __stdcall ListSetDefaultParams(ListDefaultParamStruct* dps)
+    {
+        std::wstring ini = ansi_to_wide(dps->default_ini_name);
+        auto         pos = ini.find_last_of(L"\\/");
+        std::wstring dir = pos == std::wstring::npos ? L"" : ini.substr(0, pos + 1);
+        mdlite::set_settings_inis({ini, dir + L"wincmd.ini"});
+    }
+
     HWND __stdcall ListLoadW(HWND parent, wchar_t* file, int /*flags*/)
     {
         HWND hwnd = mdlite::create_view(parent, file);

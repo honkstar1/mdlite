@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <vector>
 #include <windows.h>
 #include <litehtml.h>
 #include "gdiplus_container.h"
@@ -16,6 +17,12 @@ namespace mdlite
     std::string stylesheet(bool dark, float zoom = 1.0f);
 
     bool system_uses_dark_theme();
+
+    // Ini files the user settings are read from, in priority order (see ListSetDefaultParams in plugin.cpp).
+    void set_settings_inis(std::vector<std::wstring> paths);
+
+    // [mdlite] Theme=light|dark|system in the first settings ini that has it; "system", no key or no ini follow Windows.
+    bool use_dark_theme();
 
     // Document container: litehtml's GDI+ container plus local image loading and link capture.
     // The base class enumerates all installed fonts and starts GDI+ in its constructor, so keep one
