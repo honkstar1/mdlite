@@ -2,6 +2,7 @@
 #include <gdiplus.h>
 #include <md4c-html.h>
 #include <chrono>
+#include <vector>
 
 namespace mdlite
 {
@@ -58,6 +59,29 @@ namespace mdlite
                         L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &size) != ERROR_SUCCESS)
             return false;
         return value == 0;
+    }
+
+    static std::vector<std::wstring> g_settings_inis;
+
+    void set_settings_inis(std::vector<std::wstring> paths)
+    {
+        g_settings_inis = std::move(paths);
+    }
+
+    bool use_dark_theme()
+    {
+        for(const auto& ini : g_settings_inis)
+        {
+            wchar_t value[16] = L"";
+            GetPrivateProfileStringW(L"mdlite", L"Theme", L"", value, (DWORD) std::size(value), ini.c_str());
+            if(_wcsicmp(value, L"dark") == 0)
+                return true;
+            if(_wcsicmp(value, L"light") == 0)
+                return false;
+            if(_wcsicmp(value, L"system") == 0)
+                break;
+        }
+        return system_uses_dark_theme();
     }
 
     std::string stylesheet(bool dark, float zoom)

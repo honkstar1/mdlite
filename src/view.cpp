@@ -1,4 +1,4 @@
-// Markdown view window: a litehtml document with scrolling, links, Ctrl+wheel zoom and a find bar.
+// Markdown view window: a litehtml document with scrolling, links, Ctrl+wheel zoom, a find bar and text selection.
 // Shared by the Total Commander plugin and mdlite.exe.
 #include "view.h"
 #include "core.h"
@@ -8,6 +8,9 @@
 #include <windowsx.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <cwctype>
 #include <string>
 #include <vector>
 
@@ -22,6 +25,7 @@ namespace mdlite
         constexpr float    kMaxZoom       = 4.0f;
         constexpr float    kZoomStep      = 1.1f;
         constexpr UINT_PTR kZoomHintTimer = 1;
+        constexpr UINT_PTR kAutoScrollTimer = 2;
 
         // Process-wide, so the zoom survives Lister switching files and, in Total Commander, reopening Lister.
         float g_zoom = 1.0f;
@@ -72,6 +76,7 @@ namespace mdlite
             HGDIOBJ                 old_bmp    = nullptr;
             int                     bw = 0, bh = 0;
             bool                    tracking = false;
+            HHOOK                   key_hook = nullptr; // sees Esc before Lister does, see esc_hook
 
             float     dpi_scale       = 1.0f;
             HFONT     ui_font         = nullptr;
@@ -88,11 +93,21 @@ namespace mdlite
             int                  find_anchor = 0; // document y the search starts from
             std::wstring         term;
             std::wstring         text;            // lowercased document text, '\n' between blocks
+            std::wstring         text_raw;        // same text with its original case, for copying
             std::vector<Segment> segments;
             bool                 text_valid = false;
             std::vector<Match>   matches;
             bool                 rects_valid = false;
             int                  current     = -1;
+
+            // Mouse selection, as a range of offsets into text.
+            size_t                          sel_anchor = 0, sel_caret = 0;
+            bool                            dragging   = false;
+            bool                            drag_moved = false;
+            POINT                           drag_origin{};
+            POINT                           drag_last{}; // client coordinates, for auto-scroll
+            std::vector<litehtml::position> sel_rects;
+            bool                            sel_valid = false;
         };
 
         View* view_of(HWND h)
@@ -177,6 +192,7 @@ namespace mdlite
                     break;
             }
             v->rects_valid = false;
+            v->sel_valid   = false;
             InvalidateRect(v->hwnd, nullptr, FALSE);
         }
 
@@ -196,12 +212,17 @@ namespace mdlite
 
         void add_break(View* v)
         {
+            // Cell separator at the end of a row; it belongs to no segment, unlike a tab in preformatted text.
+            while(!v->text.empty() && v->text.back() == L'\t' &&
+                  (v->segments.empty() || v->segments.back().start + v->segments.back().len < v->text.size()))
+                v->text.pop_back();
             if(!v->text.empty() && v->text.back() != L'\n')
                 v->text += L'\n';
         }
 
         // Flattens the document into View::text, one segment per word or space. Block boundaries become '\n' so a
-        // match never spans two paragraphs; runs of whitespace collapse to one space like they render.
+        // match never spans two paragraphs; table cells are separated by a tab. Runs of whitespace collapse to one
+        // space like they render, except in preformatted text, which is kept as is.
         void collect_text(View* v, const litehtml::element::ptr& el)
         {
             if(el->css().get_display() == litehtml::display_none)
@@ -215,9 +236,19 @@ namespace mdlite
                 Segment s;
                 s.el    = el;
                 s.start = v->text.size();
-                if(el->is_white_space() || utf8.find_first_not_of(" \t\r\n") == std::string::npos)
+                auto ws = el->css().get_white_space();
+                bool is_space = el->is_white_space() || utf8.find_first_not_of(" \t\r\n") == std::string::npos;
+                if(is_space && (ws == litehtml::white_space_pre || ws == litehtml::white_space_pre_wrap))
                 {
-                    if(v->text.empty() || v->text.back() == L' ' || v->text.back() == L'\n')
+                    utf8.erase(std::remove(utf8.begin(), utf8.end(), '\r'), utf8.end());
+                    if(utf8.empty())
+                        return;
+                    s.len   = utf8.size();
+                    s.drawn = utf8 == "\n" ? L"" : utf8 == "\t" ? L"    " : widen(utf8);
+                    v->text += widen(utf8);
+                } else if(is_space)
+                {
+                    if(v->text.empty() || v->text.back() == L' ' || v->text.back() == L'\n' || v->text.back() == L'\t')
                         return;
                     s.len   = 1;
                     s.drawn = utf8 == "\t" ? L"    " : (utf8 == "\n" || utf8 == "\r") ? L"" : L" ";
@@ -236,13 +267,16 @@ namespace mdlite
                 add_break(v);
                 return;
             }
-            bool block = !el->is_inline();
+            bool cell  = el->css().get_display() == litehtml::display_table_cell;
+            bool block = !el->is_inline() && !cell;
             if(block)
                 add_break(v);
             for(const auto& child : el->children())
                 collect_text(v, child);
             if(block)
                 add_break(v);
+            else if(cell && !v->text.empty() && v->text.back() != L'\n' && v->text.back() != L'\t')
+                v->text += L'\t';
         }
 
         void ensure_text(View* v)
@@ -252,7 +286,8 @@ namespace mdlite
             v->text.clear();
             v->segments.clear();
             collect_text(v, v->doc->root());
-            CharLowerBuffW(v->text.data(), (DWORD) v->text.size());
+            v->text_raw = v->text;
+            CharLowerBuffW(v->text.data(), (DWORD) v->text.size()); // keeps the length, so offsets match text_raw
             v->text_valid = true;
         }
 
@@ -277,33 +312,37 @@ namespace mdlite
             return s.empty() || !font ? 0.0f : (float) shared_container().text_width(narrow(s).c_str(), font);
         }
 
+        // Rectangles (document coordinates) covering text[start, end), one per word.
+        void range_rects(View* v, size_t start, size_t end, std::vector<litehtml::position>& out)
+        {
+            out.clear();
+            auto it = std::upper_bound(v->segments.begin(), v->segments.end(), start,
+                                       [](size_t pos, const Segment& s) { return pos < s.start; });
+            if(it != v->segments.begin())
+                --it;
+            for(; it != v->segments.end() && it->start < end; ++it)
+            {
+                if(it->start + it->len <= start)
+                    continue;
+                size_t      a     = std::max(start, it->start) - it->start;
+                size_t      b     = std::min(end, it->start + it->len) - it->start;
+                auto        place = it->el->get_placement();
+                auto        font  = it->el->css().get_font();
+                const auto& d     = it->drawn;
+                float       x0    = a == 0 ? 0.0f : text_width(d.substr(0, std::min(a, d.size())), font);
+                float       x1    = b == it->len ? (float) place.width : text_width(d.substr(0, std::min(b, d.size())), font);
+                if(x1 > x0)
+                    out.emplace_back(place.x + x0, place.y, x1 - x0, place.height);
+            }
+        }
+
         void ensure_rects(View* v)
         {
             if(v->rects_valid)
                 return;
             v->rects_valid = true;
             for(auto& m : v->matches)
-            {
-                m.rects.clear();
-                auto it = std::upper_bound(v->segments.begin(), v->segments.end(), m.start,
-                                           [](size_t pos, const Segment& s) { return pos < s.start; });
-                if(it != v->segments.begin())
-                    --it;
-                for(; it != v->segments.end() && it->start < m.end; ++it)
-                {
-                    if(it->start + it->len <= m.start)
-                        continue;
-                    size_t      a     = std::max(m.start, it->start) - it->start;
-                    size_t      b     = std::min(m.end, it->start + it->len) - it->start;
-                    auto        place = it->el->get_placement();
-                    auto        font  = it->el->css().get_font();
-                    const auto& d     = it->drawn;
-                    float       x0    = a == 0 ? 0.0f : text_width(d.substr(0, std::min(a, d.size())), font);
-                    float x1 = b == it->len ? (float) place.width : text_width(d.substr(0, std::min(b, d.size())), font);
-                    if(x1 > x0)
-                        m.rects.emplace_back(place.x + x0, place.y, x1 - x0, place.height);
-                }
-            }
+                range_rects(v, m.start, m.end, m.rects);
         }
 
         void update_label(View* v)
@@ -500,6 +539,184 @@ namespace mdlite
                 step(v, backwards);
         }
 
+        // --- selection ----------------------------------------------------------------------------------------
+
+        bool has_selection(const View* v)
+        {
+            return v->sel_anchor != v->sel_caret;
+        }
+
+        void set_selection(View* v, size_t anchor, size_t caret)
+        {
+            if(anchor == v->sel_anchor && caret == v->sel_caret)
+                return;
+            v->sel_anchor = anchor;
+            v->sel_caret  = caret;
+            v->sel_valid  = false;
+            InvalidateRect(v->hwnd, nullptr, FALSE);
+        }
+
+        // The text offset nearest to a document point: the closest word, then the closest character boundary in it.
+        size_t offset_at(View* v, int x, int y)
+        {
+            ensure_text(v);
+            const Segment* best = nullptr;
+            float          best_x = 0, best_w = 0, best_dy = 0, best_dx = 0;
+            for(const auto& s : v->segments)
+            {
+                if(s.drawn.empty())
+                    continue;
+                auto p = s.el->get_placement();
+                float px = (float) p.x, py = (float) p.y, pw = (float) p.width, ph = (float) p.height;
+                if(pw <= 0 || ph <= 0)
+                    continue;
+                float dy = y < py ? py - y : y > py + ph ? y - (py + ph) : 0.0f;
+                float dx = x < px ? px - x : x > px + pw ? x - (px + pw) : 0.0f;
+                if(!best || dy < best_dy || (dy == best_dy && dx < best_dx))
+                {
+                    best   = &s;
+                    best_x = px;
+                    best_w = pw;
+                    best_dy = dy;
+                    best_dx = dx;
+                }
+            }
+            if(!best)
+                return 0;
+            float rx = x - best_x;
+            if(rx <= 0)
+                return best->start;
+            if(rx >= best_w)
+                return best->start + best->len;
+            const auto& d = best->drawn;
+            if(d.size() != best->len)
+                return rx < best_w / 2 ? best->start : best->start + best->len;
+            auto  font = best->el->css().get_font();
+            float prev = 0.0f;
+            for(size_t i = 1; i <= d.size(); i++)
+            {
+                float w = text_width(d.substr(0, i), font);
+                if(rx < (prev + w) / 2)
+                    return best->start + i - 1;
+                prev = w;
+            }
+            return best->start + d.size();
+        }
+
+        bool over_text(View* v, int x, int y)
+        {
+            ensure_text(v);
+            for(const auto& s : v->segments)
+            {
+                if(s.drawn.empty())
+                    continue;
+                auto p = s.el->get_placement();
+                float px = (float) p.x, py = (float) p.y;
+                if(x >= px && x < px + (float) p.width && y >= py && y < py + (float) p.height)
+                    return true;
+            }
+            return false;
+        }
+
+        void select_word(View* v, size_t off)
+        {
+            ensure_text(v);
+            const auto& t = v->text_raw;
+            if(t.empty())
+                return;
+            off         = std::min(off, t.size() - 1);
+            auto kind   = [&](size_t i) { return t[i] == L'\n' ? 0 : (iswalnum(t[i]) || t[i] == L'_') ? 1 : 2; };
+            int  k      = kind(off);
+            size_t a = off, b = off + 1;
+            while(a > 0 && kind(a - 1) == k)
+                a--;
+            while(b < t.size() && kind(b) == k)
+                b++;
+            set_selection(v, a, b);
+        }
+
+        void select_all(View* v)
+        {
+            ensure_text(v);
+            set_selection(v, 0, v->text_raw.size());
+        }
+
+        void clear_selection(View* v)
+        {
+            set_selection(v, 0, 0);
+        }
+
+        bool copy_selection(View* v)
+        {
+            if(!has_selection(v) || !v->text_valid)
+                return false;
+            size_t       lo = std::min(v->sel_anchor, v->sel_caret), hi = std::max(v->sel_anchor, v->sel_caret);
+            hi = std::min(hi, v->text_raw.size());
+            if(lo >= hi)
+                return false;
+            std::wstring out;
+            for(size_t i = lo; i < hi; i++)
+            {
+                if(v->text_raw[i] == L'\n')
+                    out += L'\r';
+                out += v->text_raw[i];
+            }
+            if(!OpenClipboard(v->hwnd))
+                return false;
+            EmptyClipboard();
+            bool    ok  = false;
+            HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, (out.size() + 1) * sizeof(wchar_t));
+            if(mem)
+            {
+                memcpy(GlobalLock(mem), out.c_str(), (out.size() + 1) * sizeof(wchar_t));
+                GlobalUnlock(mem);
+                ok = SetClipboardData(CF_UNICODETEXT, mem) != nullptr;
+                if(!ok)
+                    GlobalFree(mem);
+            }
+            CloseClipboard();
+            return ok;
+        }
+
+        // Moves the selection end to the last known mouse position.
+        void drag_selection(View* v)
+        {
+            size_t caret = offset_at(v, v->drag_last.x, v->drag_last.y + v->scroll);
+            set_selection(v, v->sel_anchor, caret);
+        }
+
+        // Lister closes itself on Esc before the key reaches the plugin window, so a selection could never be
+        // cleared with it. A thread keyboard hook runs first: with a selection in the focused view, Esc clears it
+        // and is swallowed; otherwise it passes on and closes Lister as usual.
+        LRESULT CALLBACK esc_hook(int code, WPARAM wp, LPARAM lp)
+        {
+            if(code == HC_ACTION && wp == VK_ESCAPE && !(lp & (1 << 31)))
+            {
+                HWND    focus = GetFocus();
+                wchar_t cls[32];
+                if(focus && GetClassNameW(focus, cls, (int) std::size(cls)) && wcscmp(cls, kClassName) == 0)
+                {
+                    View* v = view_of(focus);
+                    if(v && has_selection(v))
+                    {
+                        clear_selection(v);
+                        return 1;
+                    }
+                }
+            }
+            return CallNextHookEx(nullptr, code, wp, lp);
+        }
+
+        void stop_drag(HWND hwnd, View* v)
+        {
+            if(!v->dragging)
+                return;
+            v->dragging = false;
+            KillTimer(hwnd, kAutoScrollTimer);
+            if(GetCapture() == hwnd)
+                ReleaseCapture();
+        }
+
         // --- document -----------------------------------------------------------------------------------------
 
         void update_theme(View* v)
@@ -540,9 +757,12 @@ namespace mdlite
             v->path = path;
             if(!read_file(path, v->markdown))
                 return false;
-            v->dark    = system_uses_dark_theme();
+            v->dark    = use_dark_theme();
             v->scroll  = 0;
             v->current = -1;
+            stop_drag(v->hwnd, v);
+            v->sel_anchor = v->sel_caret = 0;
+            v->sel_valid                 = false;
             update_theme(v);
             if(!rebuild(v))
                 return false;
@@ -597,6 +817,28 @@ namespace mdlite
             v->old_bmp = SelectObject(v->memdc, v->bmp);
             v->bw      = w;
             v->bh      = h;
+        }
+
+        void paint_selection(View* v, int height)
+        {
+            if(!has_selection(v))
+                return;
+            if(!v->sel_valid)
+            {
+                ensure_text(v);
+                size_t lo = std::min(v->sel_anchor, v->sel_caret), hi = std::max(v->sel_anchor, v->sel_caret);
+                range_rects(v, lo, hi, v->sel_rects);
+                v->sel_valid = true;
+            }
+            Gdiplus::Graphics   g(v->memdc);
+            Gdiplus::SolidBrush brush(Gdiplus::Color(v->dark ? 120 : 90, 51, 144, 255));
+            for(const auto& r : v->sel_rects)
+            {
+                float y = (float) r.y - v->scroll;
+                if(y + (float) r.height < 0 || y > height)
+                    continue;
+                g.FillRectangle(&brush, (float) r.x, y, (float) r.width, (float) r.height);
+            }
         }
 
         void paint_highlights(View* v, int height)
@@ -661,6 +903,7 @@ namespace mdlite
                     activate(v, rc.right, rc.bottom);
                     litehtml::position clip(0, 0, rc.right, rc.bottom);
                     v->doc->draw((litehtml::uint_ptr) v->memdc, 0, -v->scroll, &clip);
+                    paint_selection(v, rc.bottom);
                     paint_highlights(v, rc.bottom);
                 }
                 paint_overlays(v);
@@ -686,6 +929,9 @@ namespace mdlite
                 switch(key)
                 {
                 case 'F': show_find(v); return true;
+                case 'C':
+                case VK_INSERT: copy_selection(v); return true;
+                case 'A': select_all(v); return true;
                 case VK_OEM_PLUS:
                 case VK_ADD: set_zoom(v, g_zoom * kZoomStep, 0); return true;
                 case VK_OEM_MINUS:
@@ -708,6 +954,11 @@ namespace mdlite
                 if(v->find_visible)
                 {
                     hide_find(v);
+                    return true;
+                }
+                if(has_selection(v))
+                {
+                    clear_selection(v);
                     return true;
                 }
                 return false;
@@ -797,6 +1048,20 @@ namespace mdlite
                 }
                 break;
             case WM_TIMER:
+                if(wp == kAutoScrollTimer)
+                {
+                    if(v && v->dragging && v->drag_moved)
+                    {
+                        int h     = client_height(hwnd);
+                        int delta = v->drag_last.y < 0 ? v->drag_last.y : v->drag_last.y > h ? v->drag_last.y - h : 0;
+                        if(delta != 0)
+                        {
+                            scroll_to(v, v->scroll + (delta < 0 ? -1 : 1) * std::max(10, std::abs(delta) / 2));
+                            drag_selection(v);
+                        }
+                    }
+                    return 0;
+                }
                 if(wp == kZoomHintTimer)
                 {
                     KillTimer(hwnd, kZoomHintTimer);
@@ -816,6 +1081,15 @@ namespace mdlite
                     int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
                     if(v->doc->on_mouse_over(x, y + v->scroll, x, y, redraw_all(hwnd)))
                         InvalidateRect(hwnd, nullptr, FALSE);
+                    if(v->dragging)
+                    {
+                        v->drag_last = {x, y};
+                        if(std::abs(x - v->drag_origin.x) > GetSystemMetrics(SM_CXDRAG) ||
+                           std::abs(y - v->drag_origin.y) > GetSystemMetrics(SM_CYDRAG))
+                            v->drag_moved = true;
+                        if(v->drag_moved)
+                            drag_selection(v);
+                    }
                 }
                 return 0;
             case WM_MOUSELEAVE:
@@ -833,25 +1107,65 @@ namespace mdlite
                     int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
                     if(v->doc->on_lbutton_down(x, y + v->scroll, x, y, redraw_all(hwnd)))
                         InvalidateRect(hwnd, nullptr, FALSE);
+                    size_t off = offset_at(v, x, y + v->scroll);
+                    if(wp & MK_SHIFT)
+                        set_selection(v, has_selection(v) ? v->sel_anchor : v->sel_caret, off);
+                    else
+                        v->sel_anchor = v->sel_caret = off; // a plain click clears the selection on release
+                    v->dragging    = true;
+                    v->drag_moved  = (wp & MK_SHIFT) != 0;
+                    v->drag_origin = v->drag_last = {x, y};
+                    SetCapture(hwnd);
+                    SetTimer(hwnd, kAutoScrollTimer, 30, nullptr);
+                    if(!(wp & MK_SHIFT))
+                    {
+                        v->sel_valid = false;
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                    }
                 }
                 return 0;
+            case WM_LBUTTONDBLCLK:
+                if(v && v->doc)
+                {
+                    int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+                    select_word(v, offset_at(v, x, y + v->scroll));
+                    v->dragging   = true; // the following release must not clear the word or open a link
+                    v->drag_moved = true;
+                    v->drag_last  = {x, y};
+                    SetCapture(hwnd);
+                }
+                return 0;
+            case WM_CAPTURECHANGED:
+                if(v && v->dragging)
+                {
+                    v->dragging = false;
+                    KillTimer(hwnd, kAutoScrollTimer);
+                }
+                break;
             case WM_LBUTTONUP:
                 if(v && v->doc)
                 {
                     auto& c = shared_container();
                     c.clicked_link.clear();
-                    int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+                    int  x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+                    bool selected = v->dragging && v->drag_moved; // dragging over a link selects, it does not click
+                    stop_drag(hwnd, v);
                     if(v->doc->on_lbutton_up(x, y + v->scroll, x, y, redraw_all(hwnd)))
                         InvalidateRect(hwnd, nullptr, FALSE);
-                    if(!c.clicked_link.empty())
+                    if(!c.clicked_link.empty() && !selected)
                         open_link(c.clicked_link);
                 }
                 return 0;
             case WM_SETCURSOR:
                 if((HWND) wp == hwnd && LOWORD(lp) == HTCLIENT)
                 {
-                    bool hand = shared_container().cursor == "pointer";
-                    SetCursor(LoadCursorW(nullptr, hand ? IDC_HAND : IDC_ARROW));
+                    bool  hand = shared_container().cursor == "pointer";
+                    POINT pt;
+                    GetCursorPos(&pt);
+                    ScreenToClient(hwnd, &pt);
+                    bool ibeam = !hand && v && v->doc && !(v->find_visible && PtInRect(&v->find_panel, pt)) &&
+                                 over_text(v, pt.x, pt.y + v->scroll);
+                    SetCursor(LoadCursorW(nullptr, hand ? IDC_HAND : ibeam ? IDC_IBEAM : IDC_ARROW));
                     return TRUE;
                 }
                 break;
@@ -864,6 +1178,8 @@ namespace mdlite
                         DeleteObject(v->bmp);
                         DeleteDC(v->memdc);
                     }
+                    if(v->key_hook)
+                        UnhookWindowsHookEx(v->key_hook);
                     DeleteObject(v->ui_font);
                     DeleteObject(v->panel_brush);
                     DeleteObject(v->page_brush);
@@ -920,6 +1236,7 @@ namespace mdlite
         v->hwnd = hwnd;
         create_ui_font(v);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR) v);
+        v->key_hook = SetWindowsHookExW(WH_KEYBOARD, esc_hook, nullptr, GetCurrentThreadId());
         if(!load_file(v, file))
         {
             DestroyWindow(hwnd);
@@ -932,6 +1249,18 @@ namespace mdlite
     {
         View* v = view_of(view);
         return v && load_file(v, file);
+    }
+
+    bool view_copy(HWND view)
+    {
+        View* v = view_of(view);
+        return v && copy_selection(v);
+    }
+
+    void view_select_all(HWND view)
+    {
+        if(View* v = view_of(view))
+            select_all(v);
     }
 
     void view_find(HWND view, bool next)

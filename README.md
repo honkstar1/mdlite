@@ -45,10 +45,25 @@ Uninstall: remove it from the same plugin list and delete the file.
 | Ctrl+0 | Reset zoom |
 | Ctrl+F | Find (case-insensitive, highlights as you type) |
 | Enter / F3, Shift+Enter / Shift+F3 | Next / previous match |
-| Esc | Close the find bar; otherwise close the viewer |
+| Mouse drag, Shift+click, double-click | Select text / extend the selection / select a word |
+| Ctrl+A, Ctrl+C | Select all / copy the selection |
+| Esc | Close the find bar, then clear the selection, then close the viewer |
 
 In Total Commander, Lister's own **Find** (F7) and **Find next** also go to the find bar, and `n`/`p` still move
 between files.
+
+## Settings
+
+The plugin reads its theme from Total Commander's `wincmd.ini` (in the folder Total Commander keeps its ini files). Add:
+
+```ini
+[mdlite]
+Theme=dark
+```
+
+`Theme` is `light`, `dark` or `system` (the default: follow the Windows app theme). It is read each time a file is
+shown, so no restart is needed. Edit `wincmd.ini` while Total Commander is closed, or it may overwrite your change on
+exit. `mdlite.exe` always follows the Windows theme.
 
 ## Standalone viewer
 
@@ -69,7 +84,8 @@ build\mdlite_bench.exe some.md 5        # headless timing: md4c / parse / layout
 ## Limits
 
 - x64 only; follows the Windows light/dark app theme.
-- No syntax highlighting (code blocks are plain monospace), no copy, no print.
+- No syntax highlighting (code blocks are plain monospace), no print.
+- Copied text is plain text: list bullets and images are not included.
 - Zoom scales text and spacing; images keep their size.
 - `#anchor` links and relative links to other files do nothing (md4c emits no heading ids). `http(s)` and `mailto` open externally.
 - Local images work; remote images are skipped on purpose so opening never waits for the network.

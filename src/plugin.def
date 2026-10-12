@@ -6,4 +6,6 @@ EXPORTS
     ListLoadNextW
     ListCloseWindow
     ListSearchDialog
+    ListSendCommand
+    ListSetDefaultParams
     ListGetDetectString
